@@ -1,0 +1,120 @@
+A001 drink water
+A002 eat meal
+A003 brush teeth
+A004 brush hair
+A005 drop
+A006 pick up
+A007 throw
+A008 sit down
+A009 stand up
+A010 clapping
+A011 reading
+A012 writing
+A013 tear up paper
+A014 put on jacket
+A015 take off jacket
+A016 put on a shoe
+A017 take off a shoe
+A018 put on glasses
+A019 take off glasses
+A020 put on a hat/cap
+A021 take off a hat/cap
+A022 cheer up
+A023 hand waving
+A024 kicking something
+A025 reach into pocket
+A026 hopping
+A027 jump up
+A028 phone call
+A029 play with phone/tablet
+A030 type on a keyboard
+A031 point to something
+A032 taking a selfie
+A033 running
+A034 rub two hands
+A035 nod head/bow
+A036 shake head
+A037 walking
+A038 jogging
+A039 put palms together
+A040 cross hands in front
+A041 sneeze/cough
+A042 staggering
+A043 falling down
+A044 headache
+A045 chest pain
+A046 back pain
+A047 neck pain
+A048 nausea/vomiting
+A049 fan self
+A050 punch/slap
+A051 kicking
+A052 pushing
+A053 pat on back
+A054 point finger
+A055 hugging
+A056 giving object
+A057 touch pocket
+A058 shaking hands
+A059 walking towards
+A060 walking apart
+A061 put on headphone
+A062 take off headphone
+A063 shoot at basket
+A064 bounce ball
+A065 tennis bat swing
+A066 juggle table tennis ball
+A067 hush
+A068 flick hair
+A069 thumb up
+A070 thumb down
+A071 make OK sign
+A072 make victory sign
+A073 staple book
+A074 counting money
+A075 cutting nails
+A076 cutting paper
+A077 snap fingers
+A078 open bottle
+A079 sniff/smell
+A080 squat down
+A081 toss a coin
+A082 fold paper
+A083 ball up paper
+A084 play magic cube
+A085 apply cream on face
+A086 apply cream on hand
+A087 put on bag
+A088 take off bag
+A089 put object into bag
+A090 take object out of bag
+A091 open a box
+A092 move heavy objects
+A093 shake fist
+A094 throw up cap/hat
+A095 capitulate
+A096 cross arms
+A097 arm circles
+A098 arm swings
+A099 run on the spot
+A100 butt kicks
+A101 cross toe touch
+A102 side kick
+A103 yawn
+A104 stretch oneself
+A105 blow nose
+A106 hit with object
+A107 wield knife
+A108 knock over
+A109 grab stuff
+A110 shoot with gun
+A111 step on foot
+A112 high-five
+A113 cheers and drink
+A114 carry object
+A115 take a photo
+A116 follow
+A117 whisper
+A118 exchange things
+A119 support somebody
+A120 rock-paper-scissors
