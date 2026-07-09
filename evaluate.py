@@ -224,6 +224,10 @@ def run_video(video_path, runtime_config, compact_label_names, action_model, yol
     fps = cap.get(cv2.CAP_PROP_FPS)
     if fps <= 0:
         fps = 20.0
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    if hasattr(inferlib, "set_video_shape"):
+        inferlib.set_video_shape(width, height)
 
     pose_results = []
     frame_index = 0

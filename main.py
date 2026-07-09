@@ -323,15 +323,19 @@ class Processor(object):
     def __init__(self, arg):
         self.arg = arg
         self.output_device = arg.device[0] if isinstance(arg.device, list) else arg.device
-        self.source_label_names = fall_detection.load_label_names(
-            os.path.join(os.getcwd(), 'label.txt')
-        )
         self.fall_config = fall_detection.build_config(
             vars(arg),
             num_classes=self.arg.model_args.get('num_class')
         )
+        raw_label_names = fall_detection.load_label_names(
+            os.path.join(os.getcwd(), 'label.txt')
+        )
+        self.source_label_names = fall_detection.expand_source_label_names(
+            raw_label_names,
+            self.fall_config
+        )
         self.label_names = fall_detection.build_compact_label_names(
-            self.source_label_names,
+            raw_label_names,
             self.fall_config
         )
         self.current_base_lr = self.arg.base_lr

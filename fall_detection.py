@@ -148,7 +148,21 @@ def load_label_names(path, num_classes=None):
     return labels
 
 
+def expand_source_label_names(label_names, config):
+    retained_source_ids = list(config["retained_source_ids"])
+    if len(label_names) != len(retained_source_ids):
+        return list(label_names)
+
+    expanded_size = max(retained_source_ids) + 1 if retained_source_ids else 0
+    expanded = ["class_{}".format(index) for index in range(expanded_size)]
+    for compact_id, source_id in enumerate(retained_source_ids):
+        expanded[source_id] = label_names[compact_id]
+    return expanded
+
+
 def build_compact_label_names(all_label_names, config):
+    if len(all_label_names) == len(config["retained_source_ids"]):
+        return list(all_label_names)
     compact_labels = []
     for source_id in config["retained_source_ids"]:
         if source_id < len(all_label_names):

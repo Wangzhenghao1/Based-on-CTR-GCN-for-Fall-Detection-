@@ -14,8 +14,9 @@ from tracking_utils import simple_tracking
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 # Edit these defaults directly if you do not want to pass command-line arguments.
-DEFAULT_VIDEO_PATH = r"D:\PyCharm\data\MPFDD-main\Scene_4\S4-P4-F2-FALL-1.mp4"
-DEFAULT_OUTPUT_PATH = str(PROJECT_ROOT / "outputs" / "relative_coordinates.mp4")
+# DEFAULT_VIDEO_PATH = r"D:\PyCharm\data\MPFDD-main\Scene_4\S4-P4-F2-FALL-1.mp4"
+DEFAULT_VIDEO_PATH = r"D:\PyCharm\data\Le2i_Fall_Detection\Coffee_room_01\Coffee_room_01\Videos\video (1).avi"
+DEFAULT_OUTPUT_PATH = str(PROJECT_ROOT / "outputs" / "relative_coordinates1.mp4")
 DEFAULT_CSV_PATH = str(PROJECT_ROOT / "outputs" / "relative_coordinates.csv")
 DEFAULT_YOLO_POSE_WEIGHTS = str(PROJECT_ROOT / "yolo26x-pose.pt")
 

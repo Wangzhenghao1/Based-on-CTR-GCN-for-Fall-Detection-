@@ -11,6 +11,7 @@ import yaml
 from ultralytics import YOLO
 
 import fall_detection
+from feeders import tools
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
@@ -32,7 +33,7 @@ torch.backends.cudnn.benchmark = False
 # VIDEO_PATH = r"D:\PyCharm\data\MPFDD-main\Scene_2\S2-P2-F2-FALL-3.mp4"
 # OUTPUT_PATH = r"D:\Webdownload\result\S2-P2-F2-FALL-3_native_ctrgcn.mp4"
 VIDEO_PATH = r"D:\PyCharm\data\Le2i_Fall_Detection\Coffee_room_01\Coffee_room_01\Videos\video (1).avi"
-OUTPUT_PATH = r"D:\Webdownload\result\video (1)_native_ctrgcn.mp4"
+OUTPUT_PATH = r"D:\Webdownload\result\video (1)_benchmark.mp4"
 # VIDEO_PATH = r"D:\PyCharm\data\Le2i_Fall_Detection\Office\Office\Videos\video (30).avi"
 # OUTPUT_PATH = r"D:\Webdownload\result\video (30)_native_ctrgcn.mp4"
 
@@ -42,7 +43,7 @@ YOLO_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 YOLO_IMGSZ = 640
 YOLO_CONF = 0.25
 
-CTRGCN_CHECKPOINT = r"D:\Server_download\stage2-runs-6-50339.pt"
+CTRGCN_CHECKPOINT = r"C:\Users\Tommy\Desktop\model-pt\ntu120t60_2d_xsub.pt"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 WINDOW_FRAMES = 64
@@ -53,6 +54,11 @@ NUM_POINT = 17
 NUM_PERSON = 2
 IN_CHANNELS = 3
 INFER_CLIP_LEN = 64
+WINDOW_PREPROCESS_MODE = "feeder_like"
+INFER_P_INTERVAL = [0.95]
+NORMALIZE_KEYPOINTS = True
+VIDEO_WIDTH = None
+VIDEO_HEIGHT = None
 
 DIST_THR = 100
 MAX_MISSED = 20
@@ -82,8 +88,9 @@ def load_runtime_settings():
 
     model_num_class = int(raw_config.get("model_args", {}).get("num_class", NUM_CLASS))
     runtime_config = fall_detection.build_config(raw_config, num_classes=model_num_class)
-    source_label_names = fall_detection.load_label_names(LABEL_PATH)
-    compact_label_names = fall_detection.build_compact_label_names(source_label_names, runtime_config)
+    raw_label_names = fall_detection.load_label_names(LABEL_PATH)
+    source_label_names = fall_detection.expand_source_label_names(raw_label_names, runtime_config)
+    compact_label_names = fall_detection.build_compact_label_names(raw_label_names, runtime_config)
     return runtime_config, compact_label_names, source_label_names
 
 
@@ -323,7 +330,26 @@ def fix_num_person(data, target_m=2):
     return out
 
 
-def run_native_ctrgcn_window(model, window_data, runtime_config):
+def set_video_shape(width, height):
+    global VIDEO_WIDTH, VIDEO_HEIGHT
+    VIDEO_WIDTH = float(width) if width and width > 0 else None
+    VIDEO_HEIGHT = float(height) if height and height > 0 else None
+
+
+def normalize_keypoints_to_model_space(keypoints):
+    if not NORMALIZE_KEYPOINTS:
+        return keypoints
+    if VIDEO_WIDTH is None or VIDEO_HEIGHT is None:
+        raise ValueError("VIDEO_WIDTH/VIDEO_HEIGHT must be set before normalized inference.")
+    output = keypoints.copy()
+    valid = np.any(np.abs(output) > 1e-6, axis=-1)
+    output[..., 0] = output[..., 0] / (VIDEO_WIDTH / 2.0) - 1.0
+    output[..., 1] = output[..., 1] / (VIDEO_HEIGHT / 2.0) - 1.0
+    output[~valid] = 0.0
+    return output
+
+
+def build_window_array(window_data):
     num_person = 1
     num_frames = len(window_data)
     num_points = 17
@@ -338,11 +364,40 @@ def run_native_ctrgcn_window(model, window_data, runtime_config):
 
     keypoint = np.nan_to_num(keypoint, nan=0.0, posinf=0.0, neginf=0.0)
     keypoint_score = np.nan_to_num(keypoint_score, nan=0.0, posinf=0.0, neginf=0.0)
+    keypoint = normalize_keypoints_to_model_space(keypoint)
 
+   
     data = np.concatenate([keypoint, keypoint_score[..., None]], axis=-1)
     data = fix_num_person(data, NUM_PERSON)
-    data = sample_frames(data, INFER_CLIP_LEN)
-    data = np.transpose(data, (3, 1, 2, 0))
+    return data
+
+
+def window_data_to_model_input(window_data, mode=None):
+    mode = mode or WINDOW_PREPROCESS_MODE
+    data = build_window_array(window_data)
+    if mode == "sample_frames":
+        data = sample_frames(data, INFER_CLIP_LEN)
+        return np.transpose(data, (3, 1, 2, 0)).astype(np.float32)
+
+    if mode != "feeder_like":
+        raise ValueError("unsupported window preprocess mode: {}".format(mode))
+
+    data = np.transpose(data, (3, 1, 2, 0)).astype(np.float32)
+    valid_frame_num = np.count_nonzero(
+        np.any(np.abs(data) > 1e-6, axis=(0, 2, 3))
+    )
+    if valid_frame_num <= 0:
+        valid_frame_num = 1
+    return tools.valid_crop_resize(
+        data,
+        valid_frame_num,
+        INFER_P_INTERVAL,
+        INFER_CLIP_LEN,
+    ).astype(np.float32)
+
+
+def run_native_ctrgcn_window(model, window_data, runtime_config):
+    data = window_data_to_model_input(window_data)
     data = np.expand_dims(data, axis=0).astype(np.float32)
     tensor = torch.from_numpy(data).to(DEVICE)
 
@@ -392,6 +447,7 @@ def main():
         fps = 20.0
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    set_video_shape(width, height)
 
     yolo_pose_model = YOLO(YOLO_POSE_WEIGHTS)
     start_time = time.time()

@@ -1,4 +1,9 @@
-work_dir: ./work_dir/fall-coco/xsub/ctrgcn_joint_walk_replace_equal
+# NTU120 original 60-class compact benchmark built from ntu120-60-benchmark.npz.
+# Label order follows the current 60-line label.txt:
+# A001-A049, A061, A062, A080, A087-A092, A101, A114.
+# Source ids 32/36/37 keep their original NTU meanings:
+# A033 check time (from watch), A037 wipe face, A038 salute.
+work_dir: ./work_dir/fall-coco/xsub/ctrgcn_xy60_benchmark
 
 retained_source_ids: [
   0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
@@ -9,10 +14,9 @@ retained_source_ids: [
   60, 61, 79, 86, 87, 88, 89, 90, 91, 100, 113
 ]
 
-# feeder
 feeder: feeders.feeder_coco.Feeder
 train_feeder_args:
-  data_path: /home/wzh/projects/data/ntu120_coco17_1file/fall_coco_walk_replace_balanced.npz
+  data_path: D:/Server_download/ntu120-60-benchmark.npz
   split: train
   subset_mode: retain
   retained_source_ids: [
@@ -35,10 +39,10 @@ train_feeder_args:
   bone: False
   coord_jitter_sigma: 0.01
   joint_dropout_prob: 0.10
-  score_scale_range: [0.7, 1.0]
+  score_scale_range: [1.0, 1.0]
 
 test_feeder_args:
-  data_path: /home/wzh/projects/data/ntu120_coco17_1file/fall_coco_walk_replace_balanced.npz
+  data_path: D:/Server_download/ntu120-60-benchmark.npz
   split: test
   subset_mode: retain
   retained_source_ids: [
@@ -57,7 +61,6 @@ test_feeder_args:
 
 shadow_test_feeder_args: {}
 
-# model
 model: model.ctrgcn.Model
 model_args:
   num_class: 60
@@ -68,14 +71,12 @@ model_args:
     labeling_mode: 'spatial'
   in_channels: 3
 
-# optim
 weight_decay: 0.0004
 base_lr: 0.1
 lr_decay_rate: 0.1
 step: [35, 55]
 warm_up_epoch: 5
 
-# training
 device: [0]
 batch_size: 64
 test_batch_size: 64
@@ -84,6 +85,7 @@ nesterov: True
 
 positive_source_id: 42
 fall_like_source_ids: [4, 5, 7, 8, 15, 16, 41, 79, 88, 89, 90, 91, 100]
+# monitored_source_ids still use original NTU source ids, not compact ids.
 monitored_source_ids: [42, 41, 79, 7, 8, 15, 16, 32, 36, 37, 88, 89, 90, 91, 100]
 
 class_weight_rule:

@@ -1,0 +1,79 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyc.*
+*$py.class
+
+# Virtual environments and local environment files
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+
+# IDE/editor metadata
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS metadata
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Training/runtime outputs
+work_dir/
+runs/
+outputs/
+tensorboard/
+wandb/
+
+# Generated datasets and arrays
+data/fukinect_fall/
+*.npz
+*.npy
+
+# Model weights/checkpoints
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.engine
+
+# Large local media artifacts
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.gif
+
+# Archives
+*.zip
+*.rar
+*.7z
+*.tar
+*.tar.gz
+
+*.pt
+*.pth
+*.onnx
+*.pkl
+*.npy
+*.npz
+weights/
+runs/
+work_dir/
+data/
+dataset/
+rtmlib
