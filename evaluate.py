@@ -28,10 +28,17 @@ def parse_args():
     parser.add_argument("--annotations-root", help="Root directory containing Annotation_benchmark files.")
     parser.add_argument(
         "--checkpoint",
-        default=r"D:\Server_download\stage2-runs-6-50339.pt",
+        default=os.path.join(
+            "work_dir", "fall-coco", "xsub",
+            "ctrgcn_absrel5_60_benchmark", "best_stage1.pt"
+        ),
         help="Path to the CTR-GCN checkpoint."
     )
-    parser.add_argument("--config", default=os.path.join("config", "fall-coco", "default.yaml"), help="Path to config yaml.")
+    parser.add_argument(
+        "--config",
+        default=os.path.join("config", "fall-coco", "absrel5.yaml"),
+        help="Path to config yaml. model_args.in_channels selects 3- or 5-channel inference."
+    )
     parser.add_argument("--yolo-weights", default="yolo26x-pose.pt", help="YOLO pose checkpoint path.")
     parser.add_argument(
         "--output-dir",
@@ -49,18 +56,6 @@ def parse_args():
     parser.add_argument("--min-hits", type=int, default=inferlib.MIN_HITS, help="Minimum hits for a valid track.")
     parser.add_argument("--score-thr", type=float, default=inferlib.SCORE_THR, help="Minimum detection score for tracking.")
     parser.add_argument("--min-window-len", type=int, default=15, help="Minimum number of tracked frames required for a window.")
-    parser.add_argument(
-        "--rescue-min-consecutive-fall-like",
-        type=int,
-        default=2,
-        help="Minimum number of consecutive fall-like windows required for rescue fall relabeling."
-    )
-    parser.add_argument(
-        "--rescue-fall-prob-threshold",
-        type=float,
-        default=0.10,
-        help="Minimum max p(fall) required for rescue fall relabeling."
-    )
     return parser.parse_args()
 
 
@@ -210,7 +205,10 @@ def load_runtime(args):
     inferlib.SCORE_THR = args.score_thr
 
     runtime_config, compact_label_names, source_label_names = inferlib.load_runtime_settings()
-    action_model = inferlib.build_model(runtime_config["num_classes"])
+    action_model = inferlib.build_model(
+        runtime_config["num_classes"],
+        runtime_config["model_in_channels"],
+    )
     yolo_model = YOLO(inferlib.YOLO_POSE_WEIGHTS)
     return runtime_config, compact_label_names, source_label_names, action_model, yolo_model
 
@@ -254,7 +252,8 @@ def run_video(video_path, runtime_config, compact_label_names, action_model, yol
         min_hits=inferlib.MIN_HITS,
         score_thr=inferlib.SCORE_THR
     )
-    tracks = inferlib.smooth_tracks(tracks, window_size=5)
+    if runtime_config["model_in_channels"] == 3:
+        tracks = inferlib.smooth_tracks(tracks, window_size=5)
 
     track_summaries = []
     all_window_results = []
@@ -291,60 +290,29 @@ def run_video(video_path, runtime_config, compact_label_names, action_model, yol
             all_window_results.append(window_summary)
 
         if windows:
-            consecutive_fall_like = 0
-            max_consecutive_fall_like = 0
-            for window in windows:
-                if window["group_label"] == "fall-like":
-                    consecutive_fall_like += 1
-                    if consecutive_fall_like > max_consecutive_fall_like:
-                        max_consecutive_fall_like = consecutive_fall_like
-                else:
-                    consecutive_fall_like = 0
-
             track_summaries.append({
                 "track_id": int(track_id),
                 "num_windows": len(windows),
-                "max_consecutive_fall_like": int(max_consecutive_fall_like),
                 "windows": windows,
             })
 
-    predicted_fall_strict = any(item["group_label"] == "fall" for item in all_window_results)
+    predicted_fall = any(item["group_label"] == "fall" for item in all_window_results)
     predicted_fall_like = any(item["group_label"] == "fall-like" for item in all_window_results)
     max_fall_score = max((item["fall_score"] for item in all_window_results), default=0.0)
-    max_consecutive_fall_like = max(
-        (track["max_consecutive_fall_like"] for track in track_summaries),
-        default=0
-    )
-    predicted_fall_rescue = (
-        (not predicted_fall_strict)
-        and max_consecutive_fall_like >= int(args.rescue_min_consecutive_fall_like)
-        and max_fall_score >= float(args.rescue_fall_prob_threshold)
-    )
-    predicted_fall = predicted_fall_strict or predicted_fall_rescue
     predicted_label = 0 if predicted_fall else 1
-    if predicted_fall_strict:
-        trigger_rule = "strict_top1_fall"
-    elif predicted_fall_rescue:
-        trigger_rule = "fall_like_run_ge_{}_pge_{:.2f}".format(
-            int(args.rescue_min_consecutive_fall_like),
-            float(args.rescue_fall_prob_threshold)
-        )
-    else:
-        trigger_rule = "none"
+    trigger_rule = "strict_top1_fall" if predicted_fall else "none"
 
     return {
         "video_path": video_path,
         "frame_count": int(frame_count or len(clean_pose_results)),
         "fps": float(fps),
+        "input_channels": int(runtime_config["model_in_channels"]),
         "num_tracks": len(track_summaries),
         "num_windows": len(all_window_results),
         "predicted_label": int(predicted_label),
         "predicted_fall": bool(predicted_fall),
-        "predicted_fall_strict": bool(predicted_fall_strict),
-        "predicted_fall_rescue": bool(predicted_fall_rescue),
         "predicted_fall_like": bool(predicted_fall_like),
         "trigger_rule": trigger_rule,
-        "max_consecutive_fall_like": int(max_consecutive_fall_like),
         "max_fall_score": float(max_fall_score),
         "tracks": track_summaries,
     }
@@ -416,12 +384,10 @@ def save_results(output_dir, results, metrics, args):
             "predicted_label",
             "correct",
             "predicted_fall",
-            "predicted_fall_strict",
-            "predicted_fall_rescue",
             "predicted_fall_like",
             "trigger_rule",
-            "max_consecutive_fall_like",
             "max_fall_score",
+            "input_channels",
             "num_tracks",
             "num_windows",
             "error",
@@ -434,12 +400,10 @@ def save_results(output_dir, results, metrics, args):
                 item["predicted_label"],
                 int(item["gt_label"] == item["predicted_label"]) if item["predicted_label"] in (0, 1) else 0,
                 int(bool(item.get("predicted_fall"))),
-                int(bool(item.get("predicted_fall_strict"))),
-                int(bool(item.get("predicted_fall_rescue"))),
                 int(bool(item.get("predicted_fall_like"))),
                 item.get("trigger_rule", ""),
-                item.get("max_consecutive_fall_like", 0),
                 item.get("max_fall_score", 0.0),
+                item.get("input_channels", 0),
                 item.get("num_tracks", 0),
                 item.get("num_windows", 0),
                 item.get("error", ""),
@@ -474,7 +438,8 @@ def main():
 
     runtime_config, compact_label_names, source_label_names, action_model, yolo_model = load_runtime(args)
     print(
-        "Loaded runtime: positive_source_id={} ({})".format(
+        "Loaded runtime: C={} positive_source_id={} ({})".format(
+            runtime_config["model_in_channels"],
             runtime_config["positive_source_id"],
             source_label_names[runtime_config["positive_source_id"]]
         )

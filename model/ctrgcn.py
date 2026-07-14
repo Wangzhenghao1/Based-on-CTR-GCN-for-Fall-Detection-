@@ -152,12 +152,12 @@ class CTRGC(nn.Module):
         super(CTRGC, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
-        if in_channels == 3 or in_channels == 9:
+        if in_channels in (3, 5, 9):
             self.rel_channels = 8
             self.mid_channels = 16
         else:
-            self.rel_channels = in_channels // rel_reduction
-            self.mid_channels = in_channels // mid_reduction
+            self.rel_channels = max(1, in_channels // rel_reduction)
+            self.mid_channels = max(1, in_channels // mid_reduction)
         self.conv1 = nn.Conv2d(self.in_channels, self.rel_channels, kernel_size=1)
         self.conv2 = nn.Conv2d(self.in_channels, self.rel_channels, kernel_size=1)
         self.conv3 = nn.Conv2d(self.in_channels, self.out_channels, kernel_size=1)

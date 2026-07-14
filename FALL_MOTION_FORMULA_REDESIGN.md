@@ -55,7 +55,7 @@ $$
 
 ### 2.3 Root Motion 局部坐标公式
 
-`ROOT_MOTION_LOGIC.md` 和 `visualize_relative_coordinates.py` 中已有一套可视化用 Root Motion 逻辑。
+`ROOT_MOTION_LOGIC.md` 和 `rel_coord_utils.py` 中已有一套 Root Motion 逻辑。
 
 Root 横坐标优先使用左右髋中心：
 

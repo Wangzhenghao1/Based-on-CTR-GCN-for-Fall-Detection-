@@ -138,20 +138,38 @@ class Feeder(Dataset):
         if self.split != 'train':
             return data_numpy
 
-        if data_numpy.shape[0] >= 3:
-            valid_mask = (data_numpy[2:3] > 0).astype(np.float32)
+        channel_count = data_numpy.shape[0]
+        if channel_count == 5:
+            coordinate_indices = np.asarray([0, 1, 2, 3], dtype=np.int64)
+            score_index = 4
+        elif channel_count == 3:
+            coordinate_indices = np.asarray([0, 1], dtype=np.int64)
+            score_index = 2
+        elif channel_count == 2:
+            coordinate_indices = np.asarray([0, 1], dtype=np.int64)
+            score_index = None
+        else:
+            raise ValueError(
+                'deploy noise supports C=2 (x,y), C=3 (x,y,score), or '
+                'C=5 (absolute_x,absolute_y,relative_x,relative_y,score); '
+                'got C={}'.format(channel_count)
+            )
+
+        if score_index is not None:
+            valid_mask = (data_numpy[score_index:score_index + 1] > 0).astype(np.float32)
         else:
             valid_mask = (
                 np.any(np.abs(data_numpy[0:2]) > 1e-6, axis=0, keepdims=True)
             ).astype(np.float32)
 
         if self.coord_jitter_sigma > 0:
+            coordinates = data_numpy[coordinate_indices]
             coord_noise = np.random.normal(
                 loc=0.0,
                 scale=self.coord_jitter_sigma,
-                size=data_numpy[0:2].shape
+                size=coordinates.shape
             ).astype(np.float32)
-            data_numpy[0:2] += coord_noise * valid_mask
+            data_numpy[coordinate_indices] = coordinates + coord_noise * valid_mask
 
         if self.joint_dropout_prob > 0:
             keep_mask = (
@@ -159,16 +177,18 @@ class Feeder(Dataset):
             ).astype(np.float32)
             data_numpy *= keep_mask[None, ...]
 
-        if data_numpy.shape[0] >= 3:
+        if score_index is not None:
             score_low, score_high = self.score_scale_range
             if score_low != 1.0 or score_high != 1.0:
                 score_scale = np.random.uniform(
                     low=score_low,
                     high=score_high,
-                    size=data_numpy[2:3].shape
+                    size=data_numpy[score_index:score_index + 1].shape
                 ).astype(np.float32)
-                data_numpy[2:3] *= score_scale
-            data_numpy[2:3] = np.clip(data_numpy[2:3], 0.0, 1.0)
+                data_numpy[score_index:score_index + 1] *= score_scale
+            data_numpy[score_index:score_index + 1] = np.clip(
+                data_numpy[score_index:score_index + 1], 0.0, 1.0
+            )
 
         return data_numpy
 

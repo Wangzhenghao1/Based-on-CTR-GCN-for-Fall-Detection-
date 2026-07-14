@@ -7,7 +7,7 @@
 当前逻辑实现于：
 
 ```text
-visualize_relative_coordinates.py
+rel_coord_utils.py
 ```
 
 ## 2. Root 原点
@@ -217,7 +217,7 @@ $$
 Root Motion、骨长归一化、局部重心和局部重心速度目前只应用于：
 
 ```text
-visualize_relative_coordinates.py
+rel_coord_utils.py
 ```
 
 当前新建的两通道训练数据脚本：

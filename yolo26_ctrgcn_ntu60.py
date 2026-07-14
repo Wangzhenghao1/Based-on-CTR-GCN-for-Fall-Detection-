@@ -12,6 +12,11 @@ from ultralytics import YOLO
 
 import fall_detection
 from feeders import tools
+from rel_coord_utils import (
+    DEFAULT_RELATIVE_COORDINATE_RULE,
+    build_relative_coordinate_args,
+    convert_person_xy_to_relative,
+)
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
@@ -29,9 +34,9 @@ torch.backends.cudnn.benchmark = False
 
 
 # VIDEO_PATH = r"D:\PyCharm\data\MPFDD-main\Scene_4\S4-P4-F2-FALL-1.mp4"
-# OUTPUT_PATH = r"D:\Webdownload\result\S4-P4-F2-FALL-1_native_ctrgcn.mp4"
+# OUTPUT_PATH = r"D:\Webdownload\result\S4-P4-F2-FALL-1_benchmark.mp4"
 # VIDEO_PATH = r"D:\PyCharm\data\MPFDD-main\Scene_2\S2-P2-F2-FALL-3.mp4"
-# OUTPUT_PATH = r"D:\Webdownload\result\S2-P2-F2-FALL-3_native_ctrgcn.mp4"
+# OUTPUT_PATH = r"D:\Webdownload\result\S2-P2-F2-FALL-3_benchmark.mp4"
 VIDEO_PATH = r"D:\PyCharm\data\Le2i_Fall_Detection\Coffee_room_01\Coffee_room_01\Videos\video (1).avi"
 OUTPUT_PATH = r"D:\Webdownload\result\video (1)_benchmark.mp4"
 # VIDEO_PATH = r"D:\PyCharm\data\Le2i_Fall_Detection\Office\Office\Videos\video (30).avi"
@@ -86,8 +91,19 @@ def load_runtime_settings():
         with open(CONFIG_PATH, "r", encoding="utf-8") as file_obj:
             raw_config = yaml.safe_load(file_obj) or {}
 
-    model_num_class = int(raw_config.get("model_args", {}).get("num_class", NUM_CLASS))
+    model_args = raw_config.get("model_args", {})
+    model_num_class = int(model_args.get("num_class", NUM_CLASS))
+    model_in_channels = int(model_args.get("in_channels", IN_CHANNELS))
+    if model_in_channels not in (3, 5):
+        raise ValueError(
+            "video inference supports in_channels=3 or 5; got {}".format(model_in_channels)
+        )
+
     runtime_config = fall_detection.build_config(raw_config, num_classes=model_num_class)
+    relative_rule = dict(DEFAULT_RELATIVE_COORDINATE_RULE)
+    relative_rule.update(raw_config.get("relative_coordinate_rule") or {})
+    runtime_config["model_in_channels"] = model_in_channels
+    runtime_config["relative_coordinate_rule"] = relative_rule
     raw_label_names = fall_detection.load_label_names(LABEL_PATH)
     source_label_names = fall_detection.expand_source_label_names(raw_label_names, runtime_config)
     compact_label_names = fall_detection.build_compact_label_names(raw_label_names, runtime_config)
@@ -287,16 +303,26 @@ def load_checkpoint_weights(path):
     raise ValueError("Unsupported checkpoint format: {}".format(path))
 
 
-def build_model(num_class):
+def build_model(num_class, in_channels=None):
+    in_channels = int(IN_CHANNELS if in_channels is None else in_channels)
     model = Model(
         num_class=num_class,
         num_point=NUM_POINT,
         num_person=NUM_PERSON,
         graph="graph.coco.Graph",
         graph_args={"labeling_mode": "spatial"},
-        in_channels=IN_CHANNELS
+        in_channels=in_channels
     )
     state_dict = load_checkpoint_weights(CTRGCN_CHECKPOINT)
+    data_bn_weight = state_dict.get("data_bn.weight")
+    if data_bn_weight is not None:
+        expected_features = NUM_PERSON * in_channels * NUM_POINT
+        if int(data_bn_weight.numel()) != expected_features:
+            checkpoint_channels = int(data_bn_weight.numel()) // (NUM_PERSON * NUM_POINT)
+            raise ValueError(
+                "checkpoint/config channel mismatch: checkpoint appears to use C={}, "
+                "but config requests C={}".format(checkpoint_channels, in_channels)
+            )
     model.load_state_dict(state_dict, strict=True)
     model.to(DEVICE)
     model.eval()
@@ -349,7 +375,7 @@ def normalize_keypoints_to_model_space(keypoints):
     return output
 
 
-def build_window_array(window_data):
+def build_window_array(window_data, runtime_config=None):
     num_person = 1
     num_frames = len(window_data)
     num_points = 17
@@ -366,15 +392,36 @@ def build_window_array(window_data):
     keypoint_score = np.nan_to_num(keypoint_score, nan=0.0, posinf=0.0, neginf=0.0)
     keypoint = normalize_keypoints_to_model_space(keypoint)
 
-   
-    data = np.concatenate([keypoint, keypoint_score[..., None]], axis=-1)
+    in_channels = int(
+        (runtime_config or {}).get("model_in_channels", IN_CHANNELS)
+    )
+    if in_channels == 3:
+        data = np.concatenate([keypoint, keypoint_score[..., None]], axis=-1)
+    elif in_channels == 5:
+        relative_rule = dict(DEFAULT_RELATIVE_COORDINATE_RULE)
+        relative_rule.update((runtime_config or {}).get("relative_coordinate_rule") or {})
+        relative_args = build_relative_coordinate_args(relative_rule)
+        relative = np.zeros_like(keypoint, dtype=np.float32)
+        for person_index in range(num_person):
+            relative[person_index], _stats = convert_person_xy_to_relative(
+                keypoint[person_index],
+                keypoint_score[person_index],
+                relative_args,
+            )
+        data = np.concatenate(
+            [keypoint, relative, keypoint_score[..., None]],
+            axis=-1,
+        )
+    else:
+        raise ValueError("unsupported model input channels: {}".format(in_channels))
+
     data = fix_num_person(data, NUM_PERSON)
     return data
 
 
-def window_data_to_model_input(window_data, mode=None):
+def window_data_to_model_input(window_data, mode=None, runtime_config=None):
     mode = mode or WINDOW_PREPROCESS_MODE
-    data = build_window_array(window_data)
+    data = build_window_array(window_data, runtime_config=runtime_config)
     if mode == "sample_frames":
         data = sample_frames(data, INFER_CLIP_LEN)
         return np.transpose(data, (3, 1, 2, 0)).astype(np.float32)
@@ -397,7 +444,7 @@ def window_data_to_model_input(window_data, mode=None):
 
 
 def run_native_ctrgcn_window(model, window_data, runtime_config):
-    data = window_data_to_model_input(window_data)
+    data = window_data_to_model_input(window_data, runtime_config=runtime_config)
     data = np.expand_dims(data, axis=0).astype(np.float32)
     tensor = torch.from_numpy(data).to(DEVICE)
 
@@ -486,10 +533,14 @@ def main():
         min_hits=MIN_HITS,
         score_thr=SCORE_THR
     )
-    tracks = smooth_tracks(tracks, window_size=5)
+    if runtime_config["model_in_channels"] == 3:
+        tracks = smooth_tracks(tracks, window_size=5)
 
     print("Step 2: Native CTR-GCN action recognition...")
-    action_model = build_model(runtime_config["num_classes"])
+    action_model = build_model(
+        runtime_config["num_classes"],
+        runtime_config["model_in_channels"],
+    )
     tracks_labels = {}
 
     for track_id, track_data in tracks.items():

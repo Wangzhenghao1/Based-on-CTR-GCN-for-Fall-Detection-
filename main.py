@@ -314,6 +314,12 @@ def get_parser():
         default=dict(),
         help='hard negative mining rule'
     )
+    parser.add_argument(
+        '--relative-coordinate-rule',
+        action=DictAction,
+        default=dict(),
+        help='five-channel absolute/relative coordinate preprocessing rule'
+    )
     return parser
 
 
