@@ -516,10 +516,21 @@ class Processor(object):
             state.update(translated)
             self.model.load_state_dict(state, strict=False)
 
+    def _unwrapped_model(self):
+        if isinstance(self.model, nn.DataParallel):
+            return self.model.module
+        return self.model
+
     def load_optimizer(self, base_lr):
+        model = self._unwrapped_model()
+        if hasattr(model, 'build_optimizer_param_groups'):
+            optimizer_parameters = model.build_optimizer_param_groups(base_lr)
+        else:
+            optimizer_parameters = self.model.parameters()
+
         if self.arg.optimizer == 'SGD':
             self.optimizer = optim.SGD(
-                self.model.parameters(),
+                optimizer_parameters,
                 lr=base_lr,
                 momentum=0.9,
                 nesterov=self.arg.nesterov,
@@ -527,7 +538,7 @@ class Processor(object):
             )
         elif self.arg.optimizer == 'Adam':
             self.optimizer = optim.Adam(
-                self.model.parameters(),
+                optimizer_parameters,
                 lr=base_lr,
                 weight_decay=self.arg.weight_decay
             )
@@ -537,6 +548,14 @@ class Processor(object):
         self.print_log(
             'using warm up, epoch: {}'.format(self.current_warm_up_epoch)
         )
+        for param_group in self.optimizer.param_groups:
+            if 'group_name' in param_group:
+                self.print_log(
+                    'optimizer group {}: lr_scale={}'.format(
+                        param_group['group_name'],
+                        param_group.get('lr_scale', 1.0)
+                    )
+                )
 
     def load_data(self):
         feeder_class = import_class(self.arg.feeder)
@@ -617,7 +636,7 @@ class Processor(object):
                 self.arg.lr_decay_rate ** np.sum(epoch >= np.array(self.current_steps))
             )
         for param_group in self.optimizer.param_groups:
-            param_group['lr'] = lr
+            param_group['lr'] = lr * float(param_group.get('lr_scale', 1.0))
         return lr
 
     def print_log(self, message, print_time=True):
@@ -649,6 +668,18 @@ class Processor(object):
 
     def train_epoch(self, epoch, stage_name, save_model=False, checkpoint_prefix='runs'):
         self.model.train()
+        model = self._unwrapped_model()
+        if hasattr(model, 'set_training_stage'):
+            schedule = model.set_training_stage(epoch, stage_name=stage_name)
+            if schedule.get('changed', False):
+                self.print_log(
+                    'training schedule: stage={}, phase={}, trainable={}/{}'.format(
+                        schedule['stage'],
+                        schedule['phase'],
+                        schedule['trainable_parameters'],
+                        schedule['total_parameters'],
+                    )
+                )
         self.print_log('{} training epoch: {}'.format(stage_name, epoch + 1))
         loader = self.data_loader['train']
         self.adjust_learning_rate(epoch)

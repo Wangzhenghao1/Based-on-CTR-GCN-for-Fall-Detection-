@@ -1,0 +1,153 @@
+# Five-channel CTR-GCN + four-coordinate XCoM dual-branch training.
+work_dir: ./work_dir/fall-coco/xsub/ctrgcn_xcom_absrel5_60
+
+retained_source_ids: [
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+  10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+  20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+  30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
+  40, 41, 42, 43, 44, 45, 46, 47, 48,
+  60, 61, 79, 86, 87, 88, 89, 90, 91, 100, 113
+]
+
+feeder: feeders.feeder_coco.Feeder
+train_feeder_args:
+  data_path: /home/wzh/projects/data/ntu120_coco17_1file/ntu120t60_2d_xsub_benchmark_absrel5.npz
+  split: train
+  subset_mode: retain
+  retained_source_ids: [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+    20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+    30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
+    40, 41, 42, 43, 44, 45, 46, 47, 48,
+    60, 61, 79, 86, 87, 88, 89, 90, 91, 100, 113
+  ]
+  debug: False
+  random_choose: False
+  random_shift: False
+  random_move: False
+  window_size: 64
+  normalization: False
+  random_rot: False
+  p_interval: [0.85, 1.0]
+  vel: False
+  bone: False
+  coord_jitter_sigma: 0.01
+  joint_dropout_prob: 0.10
+  score_scale_range: [1.0, 1.0]
+
+test_feeder_args:
+  data_path: /home/wzh/projects/data/ntu120_coco17_1file/ntu120t60_2d_xsub_benchmark_absrel5.npz
+  split: test
+  subset_mode: retain
+  retained_source_ids: [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+    20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+    30, 31, 32, 33, 34, 35, 36, 37, 38, 39,
+    40, 41, 42, 43, 44, 45, 46, 47, 48,
+    60, 61, 79, 86, 87, 88, 89, 90, 91, 100, 113
+  ]
+  window_size: 64
+  p_interval: [0.95]
+  vel: False
+  bone: False
+  debug: False
+
+shadow_test_feeder_args: {}
+
+model: model.ctrgcn_xcom.Model
+model_args:
+  num_class: 60
+  num_point: 17
+  num_person: 2
+  graph: graph.coco.Graph
+  graph_args:
+    labeling_mode: spatial
+  in_channels: 5
+  drop_out: 0
+  adaptive: True
+  frame_interval: 1.0
+
+  # Stage 1 epochs 1-10: train XCoM, fusion, and FC only.
+  freeze_backbone_epochs: 10
+  # From epoch 11 onward, additionally fine-tune the last three CTR blocks.
+  partial_backbone_blocks: [l8, l9, l10]
+  # Keep l1-l7 frozen for this experiment; set >= 0 to unfreeze all later.
+  full_unfreeze_epoch: -1
+  freeze_data_bn: True
+  backbone_lr_scale: 0.1
+
+  xcom_branch_args:
+    hidden_channels: 64
+    output_channels: 256
+    dilations: [1, 2, 4]
+    dropout: 0.1
+    causal: False
+    extractor_args:
+      min_scale_links: 4
+      scale_smooth_window: 7
+      scale_ratio_min: 0.5
+      scale_ratio_max: 2.0
+      mass_residual_limit: 0.2
+      kappa_residual_limit: 0.1
+      lambda_min: 0.1
+      lambda_max: 2.0
+      lambda_init: 1.0
+      local_channels: 64
+      global_channels: 128
+      parameter_head_channels: 64
+      global_dilations: [1, 2]
+      dropout: 0.1
+      causal: False
+      velocity_mode: central
+
+  fusion_args:
+    channels: 256
+    residual_scale_init: 0.0
+
+relative_coordinate_rule:
+  keypoint_thr: 0.0
+  origin_smooth_window: 5
+  scale_smooth_window: 7
+  min_scale_bones: 4
+  scale_ratio_min: 0.5
+  scale_ratio_max: 2.0
+  smooth_window: 5
+
+weight_decay: 0.0004
+base_lr: 0.01
+lr_decay_rate: 0.1
+step: [30, 50]
+warm_up_epoch: 5
+
+device: [0]
+batch_size: 32
+test_batch_size: 32
+num_epoch: 65
+nesterov: True
+
+positive_source_id: 42
+fall_like_source_ids: [4, 5, 7, 8, 15, 16, 41, 79, 88, 89, 90, 91, 100]
+monitored_source_ids: [42, 41, 79, 7, 8, 15, 16, 32, 36, 37, 88, 89, 90, 91, 100]
+
+class_weight_rule:
+  enabled: False
+  positive: 1.0
+  fall_like: 1.0
+  other: 1.0
+
+oversample_rule:
+  enabled: False
+  positive: 1.0
+  fall_like: 1.0
+  other: 1.0
+  source_multipliers: {}
+
+hard_negative_rule:
+  enabled: True
+  extra_multiplier: 2.0
+  fall_bonus_multiplier: 2.0
+  fine_tune_epochs: 10
+  lr_scale: 0.1
