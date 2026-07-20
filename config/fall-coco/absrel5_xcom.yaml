@@ -70,14 +70,12 @@ model_args:
   adaptive: True
   frame_interval: 1.0
 
-  # Stage 1 epochs 1-10: train XCoM, fusion, and FC only.
-  freeze_backbone_epochs: 10
-  # From epoch 11 onward, additionally fine-tune the last three CTR blocks.
+  # Train the complete dual-branch model from epoch 1.
+  freeze_backbone_epochs: 0
   partial_backbone_blocks: [l8, l9, l10]
-  # Keep l1-l7 frozen for this experiment; set >= 0 to unfreeze all later.
-  full_unfreeze_epoch: -1
-  freeze_data_bn: True
-  backbone_lr_scale: 0.1
+  full_unfreeze_epoch: 0
+  freeze_data_bn: False
+  backbone_lr_scale: 1.0
 
   xcom_branch_args:
     hidden_channels: 64
@@ -105,7 +103,7 @@ model_args:
 
   fusion_args:
     channels: 256
-    residual_scale_init: 0.0
+    residual_scale_init: 0.05
 
 relative_coordinate_rule:
   keypoint_thr: 0.0
@@ -117,9 +115,9 @@ relative_coordinate_rule:
   smooth_window: 5
 
 weight_decay: 0.0004
-base_lr: 0.01
+base_lr: 0.05
 lr_decay_rate: 0.1
-step: [30, 50]
+step: [35, 55]
 warm_up_epoch: 5
 
 device: [0]

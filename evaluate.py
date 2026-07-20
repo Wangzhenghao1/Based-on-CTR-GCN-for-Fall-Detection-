@@ -1,11 +1,14 @@
 import argparse
 import csv
+import importlib
 import json
 import os
 from collections import defaultdict
 
 import cv2
 import numpy as np
+import torch
+import yaml
 from ultralytics import YOLO
 
 import yolo26_ctrgcn_ntu60 as inferlib
@@ -13,16 +16,42 @@ import yolo26_ctrgcn_ntu60 as inferlib
 
 VIDEO_EXTENSIONS = {".avi", ".mp4", ".mov", ".mkv", ".mpeg", ".mpg"}
 ANNOTATION_EXTENSIONS = {".txt", ".csv", ".ann"}
+CAUCAFALL_FALL_ACTIVITIES = {
+    "fall backwards",
+    "fall forward",
+    "fall left",
+    "fall right",
+    "fall sitting",
+}
+CAUCAFALL_NORMAL_ACTIVITIES = {
+    "hop",
+    "kneel",
+    "pick up object",
+    "sit down",
+    "walk",
+}
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Evaluate fall detection on Le2i with Annotation_benchmark labels."
+        description="Evaluate one CTR-GCN checkpoint on Le2i and CAUCAFall."
     )
     parser.add_argument(
-        "--dataset-root",
+        "--dataset-root", "--le2i-root",
+        dest="le2i_root",
         default=r"D:\PyCharm\data\Le2i_Fall_Detection",
-        help="Le2i dataset root. If set, the script auto-discovers Annotation_benchmark and sibling Videos folders."
+        help=(
+            "Le2i root. --dataset-root remains as a backwards-compatible alias. "
+            "Set to an empty string to skip Le2i."
+        )
+    )
+    parser.add_argument(
+        "--caucafall-root",
+        default=r"D:\PyCharm\data\Dataset CAUCAFall_mp4",
+        help=(
+            "CAUCAFall root containing Subject/Activity/MP4 files. "
+            "Set to an empty string to skip CAUCAFall."
+        )
     )
     parser.add_argument("--videos-root", help="Root directory containing Le2i videos.")
     parser.add_argument("--annotations-root", help="Root directory containing Annotation_benchmark files.")
@@ -42,8 +71,8 @@ def parse_args():
     parser.add_argument("--yolo-weights", default="yolo26x-pose.pt", help="YOLO pose checkpoint path.")
     parser.add_argument(
         "--output-dir",
-        default=r"D:\Server_download\le2i_eval",
-        help="Directory to save evaluation outputs."
+        default=r"D:\Server_download\fall_benchmark_eval",
+        help="Root directory for per-dataset outputs and the combined summary."
     )
     parser.add_argument("--device", default=inferlib.DEVICE, help="Device for CTR-GCN inference.")
     parser.add_argument("--yolo-device", default=inferlib.YOLO_DEVICE, help="Device for YOLO pose inference.")
@@ -144,6 +173,40 @@ def build_dataset_entries(dataset_root):
     return entries, missing_videos, discovered_scenes
 
 
+def normalize_activity_name(name):
+    return " ".join(name.strip().lower().replace("_", " ").replace("-", " ").split())
+
+
+def build_caucafall_entries(dataset_root):
+    entries = []
+    unknown_activities = set()
+
+    for video_path in sorted(iter_files(dataset_root, VIDEO_EXTENSIONS)):
+        activity = os.path.basename(os.path.dirname(video_path))
+        subject = os.path.basename(os.path.dirname(os.path.dirname(video_path)))
+        normalized_activity = normalize_activity_name(activity)
+        if normalized_activity in CAUCAFALL_FALL_ACTIVITIES:
+            gt_label = 0
+        elif normalized_activity in CAUCAFALL_NORMAL_ACTIVITIES:
+            gt_label = 1
+        else:
+            unknown_activities.add(activity)
+            continue
+
+        relative_key = os.path.splitext(os.path.relpath(video_path, dataset_root))[0].replace("\\", "/")
+        entries.append({
+            "annotation_path": "",
+            "video_path": video_path,
+            "relative_key": relative_key,
+            "stem": os.path.splitext(os.path.basename(video_path))[0],
+            "subject": subject,
+            "activity": activity,
+            "gt_label": gt_label,
+        })
+
+    return entries, sorted(unknown_activities)
+
+
 def parse_annotation_label(annotation_path):
     with open(annotation_path, "r", encoding="utf-8") as file_obj:
         lines = [line.strip() for line in file_obj if line.strip()]
@@ -189,6 +252,27 @@ def parse_annotation_label(annotation_path):
     raise ValueError("Unsupported annotation format: {}".format(annotation_path))
 
 
+def build_action_model(config_path, checkpoint_path, runtime_config, device):
+    with open(config_path, "r", encoding="utf-8") as file_obj:
+        raw_config = yaml.safe_load(file_obj) or {}
+
+    model_path = raw_config.get("model", "model.ctrgcn.Model")
+    module_name, class_name = model_path.rsplit(".", 1)
+    model_class = getattr(importlib.import_module(module_name), class_name)
+    model_args = dict(raw_config.get("model_args") or {})
+    model_args["num_class"] = int(runtime_config["num_classes"])
+    model_args["in_channels"] = int(runtime_config["model_in_channels"])
+
+    model = model_class(**model_args)
+    state_dict = inferlib.load_checkpoint_weights(checkpoint_path)
+    if state_dict and all(key.startswith("module.") for key in state_dict):
+        state_dict = {key[len("module."):]: value for key, value in state_dict.items()}
+    model.load_state_dict(state_dict, strict=True)
+    model.to(device)
+    model.eval()
+    return model, model_path
+
+
 def load_runtime(args):
     inferlib.CTRGCN_CHECKPOINT = os.path.abspath(args.checkpoint)
     inferlib.CONFIG_PATH = os.path.abspath(args.config)
@@ -205,12 +289,21 @@ def load_runtime(args):
     inferlib.SCORE_THR = args.score_thr
 
     runtime_config, compact_label_names, source_label_names = inferlib.load_runtime_settings()
-    action_model = inferlib.build_model(
-        runtime_config["num_classes"],
-        runtime_config["model_in_channels"],
+    action_model, model_path = build_action_model(
+        inferlib.CONFIG_PATH,
+        inferlib.CTRGCN_CHECKPOINT,
+        runtime_config,
+        args.device,
     )
     yolo_model = YOLO(inferlib.YOLO_POSE_WEIGHTS)
-    return runtime_config, compact_label_names, source_label_names, action_model, yolo_model
+    return (
+        runtime_config,
+        compact_label_names,
+        source_label_names,
+        action_model,
+        yolo_model,
+        model_path,
+    )
 
 
 def run_video(video_path, runtime_config, compact_label_names, action_model, yolo_model, args):
@@ -318,7 +411,7 @@ def run_video(video_path, runtime_config, compact_label_names, action_model, yol
     }
 
 
-def compute_metrics(results):
+def compute_metrics(results, include_activity_breakdown=True):
     tp = sum(1 for item in results if item["gt_label"] == 0 and item["predicted_label"] == 0)
     fn = sum(1 for item in results if item["gt_label"] == 0 and item["predicted_label"] == 1)
     fp = sum(1 for item in results if item["gt_label"] == 1 and item["predicted_label"] == 0)
@@ -336,7 +429,7 @@ def compute_metrics(results):
     normal_recall = safe_div(tn, tn + fp)
     fall_f1 = safe_div(2 * fall_precision * fall_recall, fall_precision + fall_recall)
 
-    return {
+    metrics = {
         "num_videos": total,
         "num_fall_videos": tp + fn,
         "num_normal_videos": tn + fp,
@@ -361,13 +454,26 @@ def compute_metrics(results):
         },
     }
 
+    if include_activity_breakdown and any(item.get("activity") for item in results):
+        activity_groups = defaultdict(list)
+        for item in results:
+            if item.get("activity"):
+                activity_groups[item["activity"]].append(item)
+        metrics["by_activity"] = {
+            activity: compute_metrics(items, include_activity_breakdown=False)
+            for activity, items in sorted(activity_groups.items())
+        }
 
-def save_results(output_dir, results, metrics, args):
+    return metrics
+
+
+def save_results(output_dir, dataset_name, results, metrics, args):
     ensure_dir(output_dir)
     json_path = os.path.join(output_dir, "evaluation_results.json")
     csv_path = os.path.join(output_dir, "evaluation_results.csv")
 
     payload = {
+        "dataset": dataset_name,
         "metrics": metrics,
         "args": vars(args),
         "results": results,
@@ -378,6 +484,9 @@ def save_results(output_dir, results, metrics, args):
     with open(csv_path, "w", newline="", encoding="utf-8") as file_obj:
         writer = csv.writer(file_obj)
         writer.writerow([
+            "dataset",
+            "subject",
+            "activity",
             "video_path",
             "annotation_path",
             "gt_label",
@@ -394,6 +503,9 @@ def save_results(output_dir, results, metrics, args):
         ])
         for item in results:
             writer.writerow([
+                dataset_name,
+                item.get("subject", ""),
+                item.get("activity", ""),
                 item["video_path"],
                 item["annotation_path"],
                 item["gt_label"],
@@ -412,40 +524,46 @@ def save_results(output_dir, results, metrics, args):
     return json_path, csv_path
 
 
-def main():
-    args = parse_args()
-    ensure_dir(args.output_dir)
+def save_combined_summary(output_dir, dataset_metrics, args):
+    json_path = os.path.join(output_dir, "evaluation_summary.json")
+    csv_path = os.path.join(output_dir, "evaluation_summary.csv")
 
-    if args.dataset_root:
-        entries, missing_videos, discovered_scenes = build_dataset_entries(args.dataset_root)
-        if not discovered_scenes:
-            raise RuntimeError("No scene folders with Annotation_benchmark and sibling Videos were found.")
-        print("Discovered {} scene folders.".format(len(discovered_scenes)))
-    else:
-        if not args.annotations_root or not args.videos_root:
-            raise RuntimeError("Either --dataset-root or both --videos-root and --annotations-root must be provided.")
-        entries, missing_videos = build_annotation_entries(args.annotations_root, args.videos_root)
-
-    if not entries:
-        raise RuntimeError("No matching annotation/video pairs found.")
-
-    if missing_videos:
-        print("Warning: {} annotation files have no matching video.".format(len(missing_videos)))
-        missing_path = os.path.join(args.output_dir, "missing_videos.txt")
-        with open(missing_path, "w", encoding="utf-8") as file_obj:
-            for path in missing_videos:
-                file_obj.write(path + "\n")
-
-    runtime_config, compact_label_names, source_label_names, action_model, yolo_model = load_runtime(args)
-    print(
-        "Loaded runtime: C={} positive_source_id={} ({})".format(
-            runtime_config["model_in_channels"],
-            runtime_config["positive_source_id"],
-            source_label_names[runtime_config["positive_source_id"]]
+    with open(json_path, "w", encoding="utf-8") as file_obj:
+        json.dump(
+            {"args": vars(args), "datasets": dataset_metrics},
+            file_obj,
+            indent=2,
+            ensure_ascii=False,
         )
-    )
-    print("Matched {} videos for evaluation.".format(len(entries)))
 
+    with open(csv_path, "w", newline="", encoding="utf-8") as file_obj:
+        writer = csv.writer(file_obj)
+        writer.writerow([
+            "dataset", "num_videos", "num_fall_videos", "num_normal_videos",
+            "accuracy", "fall_precision", "fall_recall", "fall_f1",
+            "tp", "fn", "fp", "tn",
+        ])
+        for dataset_name, metrics in dataset_metrics.items():
+            counts = metrics["counts"]
+            writer.writerow([
+                dataset_name,
+                metrics["num_videos"],
+                metrics["num_fall_videos"],
+                metrics["num_normal_videos"],
+                metrics["accuracy"],
+                metrics["fall_precision"],
+                metrics["fall_recall"],
+                metrics["fall_f1"],
+                counts["tp"], counts["fn"], counts["fp"], counts["tn"],
+            ])
+
+    return json_path, csv_path
+
+
+def evaluate_entries(
+        dataset_name, entries, output_dir, runtime_config,
+        compact_label_names, action_model, yolo_model, args):
+    print("\n=== {}: {} videos ===".format(dataset_name, len(entries)))
     results = []
     for index, entry in enumerate(entries, start=1):
         annotation_path = entry["annotation_path"]
@@ -454,9 +572,24 @@ def main():
         result = {
             "annotation_path": annotation_path,
             "video_path": video_path,
+            "dataset": dataset_name,
+            "subject": entry.get("subject", ""),
+            "activity": entry.get("activity", ""),
         }
         try:
-            gt_label = parse_annotation_label(annotation_path)
+            gt_label = entry.get("gt_label")
+            if gt_label is None:
+                gt_label = parse_annotation_label(annotation_path)
+            result["gt_label"] = int(gt_label)
+        except Exception as exc:
+            result["gt_label"] = -1
+            result["predicted_label"] = -1
+            result["error"] = "Label error: {}".format(exc)
+            print("  error: {}".format(result["error"]))
+            results.append(result)
+            continue
+
+        try:
             video_result = run_video(
                 video_path,
                 runtime_config,
@@ -466,7 +599,6 @@ def main():
                 args
             )
             result.update(video_result)
-            result["gt_label"] = int(gt_label)
             print(
                 "  gt={} pred={} rule={} tracks={} windows={} max_fall_score={:.3f}".format(
                     gt_label,
@@ -478,7 +610,6 @@ def main():
                 )
             )
         except Exception as exc:
-            result["gt_label"] = -1
             result["predicted_label"] = -1
             result["error"] = str(exc)
             print("  error: {}".format(exc))
@@ -486,12 +617,12 @@ def main():
 
     valid_results = [item for item in results if item["gt_label"] in (0, 1) and item["predicted_label"] in (0, 1)]
     if not valid_results:
-        raise RuntimeError("No valid evaluation results were produced.")
+        raise RuntimeError("No valid {} evaluation results were produced.".format(dataset_name))
 
     metrics = compute_metrics(valid_results)
-    json_path, csv_path = save_results(args.output_dir, results, metrics, args)
+    json_path, csv_path = save_results(output_dir, dataset_name, results, metrics, args)
 
-    print("Evaluation done.")
+    print("{} evaluation done.".format(dataset_name))
     print("Accuracy: {:.4f}".format(metrics["accuracy"]))
     print("Fall precision: {:.4f}".format(metrics["fall_precision"]))
     print("Fall recall: {:.4f}".format(metrics["fall_recall"]))
@@ -499,6 +630,98 @@ def main():
     print("Confusion matrix:", metrics["confusion_matrix"]["matrix"])
     print("Saved JSON:", json_path)
     print("Saved CSV:", csv_path)
+    return metrics
+
+
+def main():
+    args = parse_args()
+    ensure_dir(args.output_dir)
+
+    datasets = []
+    if args.le2i_root:
+        entries, missing_videos, discovered_scenes = build_dataset_entries(args.le2i_root)
+        if not discovered_scenes:
+            raise RuntimeError(
+                "No Le2i scene folders with Annotation_benchmark and sibling Videos were found."
+            )
+        le2i_output_dir = os.path.join(args.output_dir, "le2i")
+        ensure_dir(le2i_output_dir)
+        print("Discovered {} Le2i scene folders.".format(len(discovered_scenes)))
+        if missing_videos:
+            print("Warning: {} Le2i annotations have no matching video.".format(len(missing_videos)))
+            missing_path = os.path.join(le2i_output_dir, "missing_videos.txt")
+            with open(missing_path, "w", encoding="utf-8") as file_obj:
+                for path in missing_videos:
+                    file_obj.write(path + "\n")
+        if not entries:
+            raise RuntimeError("No matching Le2i annotation/video pairs found.")
+        datasets.append(("Le2i", entries, le2i_output_dir))
+    elif args.annotations_root and args.videos_root:
+        entries, missing_videos = build_annotation_entries(args.annotations_root, args.videos_root)
+        if not entries:
+            raise RuntimeError("No matching custom Le2i annotation/video pairs found.")
+        datasets.append(("Le2i", entries, os.path.join(args.output_dir, "le2i")))
+
+    if args.caucafall_root:
+        caucafall_entries, unknown_activities = build_caucafall_entries(args.caucafall_root)
+        if unknown_activities:
+            print("Warning: skipped unknown CAUCAFall activities: {}".format(", ".join(unknown_activities)))
+        if not caucafall_entries:
+            raise RuntimeError("No labeled CAUCAFall videos were found.")
+        datasets.append((
+            "CAUCAFall",
+            caucafall_entries,
+            os.path.join(args.output_dir, "caucafall"),
+        ))
+
+    if not datasets:
+        raise RuntimeError("No dataset was enabled for evaluation.")
+
+    (
+        runtime_config,
+        compact_label_names,
+        source_label_names,
+        action_model,
+        yolo_model,
+        model_path,
+    ) = load_runtime(args)
+    print(
+        "Loaded runtime: model={} C={} positive_source_id={} ({})".format(
+            model_path,
+            runtime_config["model_in_channels"],
+            runtime_config["positive_source_id"],
+            source_label_names[runtime_config["positive_source_id"]]
+        )
+    )
+
+    dataset_metrics = {}
+    for dataset_name, entries, output_dir in datasets:
+        ensure_dir(output_dir)
+        dataset_metrics[dataset_name] = evaluate_entries(
+            dataset_name,
+            entries,
+            output_dir,
+            runtime_config,
+            compact_label_names,
+            action_model,
+            yolo_model,
+            args,
+        )
+
+    summary_json, summary_csv = save_combined_summary(args.output_dir, dataset_metrics, args)
+    print("\nCombined summary:")
+    for dataset_name, metrics in dataset_metrics.items():
+        print(
+            "{}: Acc={:.4f} Precision={:.4f} Recall={:.4f} F1={:.4f}".format(
+                dataset_name,
+                metrics["accuracy"],
+                metrics["fall_precision"],
+                metrics["fall_recall"],
+                metrics["fall_f1"],
+            )
+        )
+    print("Saved combined JSON:", summary_json)
+    print("Saved combined CSV:", summary_csv)
 
 
 if __name__ == "__main__":
